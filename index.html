@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="蓮生寺タスク">
+<title>熊谷山蓮生寺 タスク管理</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;600;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  * { -webkit-tap-highlight-color: transparent; }
+  html, body { margin:0; padding:0; height:100%; overscroll-behavior:none; }
+  #root { height:100%; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+const localStore = {
+  async get(key) {
+    try {
+      const v = localStorage.getItem("renshoji:" + key);
+      if (v === null) return null;
+      return { key, value: v };
+    } catch (e) { return null; }
+  },
+  async set(key, value) {
+    try {
+      localStorage.setItem("renshoji:" + key, value);
+      return { key, value };
+    } catch (e) { return null; }
+  },
+};
+
+const CATEGORY_CONFIG = {
+  行事: { icon: "🙏", color: "#6b4c8a", bg: "rgba(107,76,138,0.10)", badgeBg: "#f3eef8", badgeBorder: "#c9a8e0", dotColor: "#6b4c8a" },
+  発送: { icon: "📮", color: "#1a5c8a", bg: "rgba(26,92,138,0.10)", badgeBg: "#eaf3fb", badgeBorder: "#8ec4e8", dotColor: "#1a5c8a" },
+  発注: { icon: "📦", color: "#7a5230", bg: "rgba(122,82,48,0.10)", badgeBg: "#faf3ea", badgeBorder: "#e0c48e", dotColor: "#b8923a" },
+  私用: { icon: "🌿", color: "#4a7a5a", bg: "rgba(74,122,90,0.10)", badgeBg: "#eef5ee", badgeBorder: "#a8c9ae", dotColor: "#4a7a5a" },
+};
+const STATUS_CONFIG = {
+  実行前: { label: "実行前", color: "#6b7280", bg: "#f3f4f6" },
+  実行中: { label: "実行中", color: "#1d4ed8", bg: "#dbeafe" },
+  完了済み: { label: "完了済み", color: "#166534", bg: "#dcfce7" },
+};
+const WEEKDAYS = ["日","月","火","水","木","金","土"];
+
+const HOLIDAYS = new Set([
+  "2026-1-1","2026-1-12","2026-2-11","2026-2-23","2026-3-20","2026-4-29",
+  "2026-5-3","2026-5-4","2026-5-5","2026-5-6","2026-7-20","2026-8-11",
+  "2026-9-21","2026-9-22","2026-9-23","2026-10-12","2026-11-3","2026-11-23",
+  "2027-1-1","2027-1-11","2027-2-11","2027-2-23","2027-3-20","2027-4-29",
+  "2027-5-3","2027-5-4","2027-5-5","2027-7-19","2027-8-11","2027-9-20",
+  "2027-9-23","2027-10-11","2027-11-3","2027-11-23",
+]);
+function isHoliday(year, month, day) {
+  return HOLIDAYS.has(year + "-" + month + "-" + day);
+}
+
+function getEquinox(year, type) {
+  if (type === "spring") {
+    const d = Math.floor(20.8431 + 0.242194 * (year - 1980) - Math.floor((year - 1980) / 4));
+    return new Date(year, 2, d);
+  } else {
+    const d = Math.floor(23.2488 + 0.242194 * (year - 1980) - Math.floor((year - 1980) / 4));
+    return new Date(year, 8, d);
+  }
+}
+
+function buildTasks(year) {
+  const spring = getEquinox(year, "spring");
+  const autumn = getEquinox(year, "autumn");
+  const springLabel = (spring.getMonth() + 1) + "月" + spring.getDate() + "日";
+  const autumnLabel = (autumn.getMonth() + 1) + "月" + autumn.getDate() + "日";
+  const springMonth = spring.getMonth() + 1;
+  const autumnMonth = autumn.getMonth() + 1;
+
+  const yearly = [
+    { id: "t01", name: "修正会", category: "行事", month: 1, day: 1 },
+    { id: "t02", name: "新年法話会", category: "行事", month: 1, day: 27 },
+    { id: "t03", name: "寺報発注", category: "発注", month: 2, day: 15 },
+    { id: "t04", name: "春彼岸会 案内状発送・寺報発送", category: "発送", month: 2, day: 20 },
+    { id: "t05", name: "永代経 案内状発送", category: "発送", month: 3, day: 15 },
+    { id: "t06", name: "春彼岸会（" + springLabel + "）", category: "行事", month: springMonth, day: spring.getDate() },
+    { id: "t07", name: "永代経", category: "行事", month: 4, day: 15 },
+    { id: "t08", name: "逮夜雅楽演奏 案内状発送", category: "発送", month: 4, day: 27 },
+    { id: "t09", name: "逮夜雅楽演奏", category: "行事", month: 5, day: 27 },
+    { id: "t10", name: "7月お盆案内 発送", category: "発送", month: 6, day: 10 },
+    { id: "t11", name: "夏の法話会 案内状発送", category: "発送", month: 6, day: 27 },
+    { id: "t12", name: "8月お盆案内・合同盆案内 発送", category: "発送", month: 7, day: 10 },
+    { id: "t13", name: "夏の法話会", category: "行事", month: 7, day: 27 },
+    { id: "t14", name: "合同盆", category: "行事", month: 8, day: 13 },
+    { id: "t15", name: "寺報発注", category: "発注", month: 8, day: 15 },
+    { id: "t16", name: "秋彼岸会 案内状発送・寺報発送", category: "発送", month: 8, day: 20 },
+    { id: "t17", name: "10月お取越案内 発送", category: "発送", month: 9, day: 10 },
+    { id: "t18", name: "秋彼岸会（" + autumnLabel + "）", category: "行事", month: autumnMonth, day: autumn.getDate() },
+    { id: "t19", name: "11月お取越案内 発送", category: "発送", month: 10, day: 10 },
+    { id: "t20", name: "報恩講 案内状発送・カレンダー発送", category: "発送", month: 10, day: 23 },
+    { id: "t21", name: "報恩講", category: "行事", month: 11, day: 23 },
+    { id: "t22", name: "新年法話会 案内状発送", category: "発送", month: 12, day: 27 },
+    { id: "t23", name: "新年法話会 講師依頼状発送", category: "発送", month: 12, day: 20 },
+    { id: "t24", name: "春彼岸会 講師依頼状発送", category: "発送", month: 2, day: 20 },
+    { id: "t25", name: "夏の法話会 講師依頼状発送", category: "発送", month: 6, day: 20 },
+    { id: "t26", name: "秋彼岸会 講師依頼状発送", category: "発送", month: 8, day: 20 },
+    { id: "t27", name: "報恩講 講師依頼状発送", category: "発送", month: 10, day: 20 },
+    { id: "t28", name: "7・8月初盆確認発送", category: "発送", month: 6, day: 10 },
+    { id: "t29", name: "8月初盆案内 発送", category: "発送", month: 7, day: 10 },
+    { id: "t30", name: "春彼岸・上半期合同年忌法要", category: "行事", month: springMonth, day: spring.getDate() + 1 },
+    { id: "t31", name: "秋彼岸・下半期合同年忌法要", category: "行事", month: autumnMonth, day: autumn.getDate() + 1 },
+    { id: "t32", name: "報恩講", category: "行事", month: 11, day: 24 },
+  ];
+
+  const monthly = [];
+  for (let m = 1; m <= 12; m++) {
+    if (m % 2 === 0) {
+      monthly.push({ id: "gyaku-" + m, name: "お逮夜法要", category: "行事", month: m, day: 27, recurrence: "毎月" });
+    }
+    monthly.push({ id: "doboshi-" + m, name: "同朋新聞発送", category: "発送", month: m, day: 21, recurrence: "毎月" });
+  }
+
+  return yearly.map(function(t){ return Object.assign({}, t, { recurrence: "毎年", date: new Date(year, t.month - 1, t.day) }); })
+    .concat(monthly.map(function(t){ return Object.assign({}, t, { date: new Date(year, t.month - 1, t.day) }); }))
+    .sort(function(a,b){ return a.date - b.date; });
+}
+
+function getDaysUntil(date) {
+  const todayD = new Date(); todayD.setHours(0,0,0,0);
+  const d = new Date(date); d.setHours(0,0,0,0);
+  return Math.ceil((d - todayD) / 86400000);
+}
+function formatDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return (d.getMonth()+1) + "月" + d.getDate() + "日";
+}
+function formatDateWithWeekday(month, day, year) {
+  const d = new Date(year, month - 1, day);
+  return { main: month + "月" + day + "日", weekday: "（" + WEEKDAYS[d.getDay()] + "）" };
+}
+function prevMemoKey(task, year) {
+  if (task.recurrence === "毎月") {
+    const pm = task.month - 1;
+    if (pm === 0) return { year: year - 1, id: task.id.replace(/-\d+$/, "-12") };
+    return { year: year, id: task.id.replace(/-\d+$/, "-" + pm) };
+  }
+  return { year: year - 1, id: task.id };
+}
+function getCardStyle(days, status, category, isGyoji) {
+  const cat = CATEGORY_CONFIG[category];
+  const opacity = status === "完了済み" ? 0.55 : 1;
+  let bg, border;
+  if (status === "完了済み") {
+    bg = "rgba(200,200,200,0.12)";
+    border = "1px solid rgba(0,0,0,0.15)";
+  } else if (!isGyoji && days < 0) {
+    bg = "rgba(220,38,38,0.10)";
+    border = "2.5px solid rgba(220,38,38,0.85)";
+  } else if (days <= 5) {
+    bg = cat.bg;
+    border = "2.5px solid rgba(220,38,38,0.85)";
+  } else if (days <= 15) {
+    bg = cat.bg;
+    border = "2.5px solid rgba(234,179,8,0.85)";
+  } else {
+    bg = cat.bg;
+    border = "1px solid rgba(0,0,0,0.18)";
+  }
+  return { background: bg, border: border, borderRadius: 14, opacity: opacity, transition: "all 0.2s", boxShadow: "0 1px 4px rgba(0,0,0,0.06)" };
+}
+
+function UrgencyBadge(props) {
+  const days = props.days, isGyoji = props.isGyoji, isDone = props.isDone;
+  const b = function(color, bg, label) {
+    return React.createElement('span', { style:{ fontSize:"0.68rem", color:color, fontWeight:700, background:bg, padding:"2px 8px", borderRadius:99 } }, label);
+  };
+  if (isDone) return b("#1d4ed8","#dbeafe","完了");
+  if (isGyoji) {
+    if (days < 0)   return null;
+    if (days === 0) return b("#dc2626","#fee2e2","本日");
+    if (days <= 5)  return b("#dc2626","#fee2e2","あと"+days+"日");
+    if (days <= 15) return b("#b45309","#fef3c7","あと"+days+"日");
+    return b("#6b7280","#f3f4f6","あと"+days+"日");
+  }
+  if (days < 0)   return b("#dc2626","#fee2e2","期限超過");
+  if (days === 0) return b("#dc2626","#fee2e2","本日");
+  if (days <= 5)  return b("#dc2626","#fee2e2","あと"+days+"日");
+  if (days <= 15) return b("#b45309","#fef3c7","あと"+days+"日");
+  return b("#6b7280","#f3f4f6","あと"+days+"日");
+}
+
+const MIN_YEAR = new Date().getFullYear();
+
+function App() {
+  const today = new Date();
+  const [year, setYear] = useState(today.getFullYear());
+  const [filterCat, setFilterCat] = useState("すべて");
+  const [filterStatus, setFilterStatus] = useState("すべて");
+  const [filterMonth, setFilterMonth] = useState(today.getMonth() + 1);
+  const [statuses, setStatuses] = useState({});
+  const [memos, setMemos] = useState({});
+  const [completedDates, setCompletedDates] = useState({});
+  const [customTasks, setCustomTasks] = useState({});
+  const [allMemos, setAllMemos] = useState({});
+  const [storageReady, setStorageReady] = useState(false);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newTask, setNewTask] = useState({ name:"", category:"行事", month:1, day:1, recurrence:"単発", noDate:false });
+  const [openMemoId, setOpenMemoId] = useState(null);
+  const [editTask, setEditTask] = useState(null);
+  const [overrides, setOverrides] = useState({});
+  const [deletedIds, setDeletedIds] = useState(new Set());
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [viewMode, setViewMode] = useState("list");
+  const [notification, setNotification] = useState(null);
+  const notifShown = useRef(false);
+  const touchStartX = useRef(null);
+  const scrollContainerRef = useRef(null);
+
+  const STORAGE_KEY   = "v2_" + year;
+  const MEMO_ALL_KEY  = "memos_all";
+  const CUSTOM_ALL_KEY = "custom_all";
+
+  useEffect(function() {
+    setStorageReady(false);
+    notifShown.current = false;
+    (async function() {
+      try {
+        const r = await localStore.get(STORAGE_KEY);
+        if (r && r.value) {
+          const p = JSON.parse(r.value);
+          setStatuses(p.statuses || {}); setCompletedDates(p.completedDates || {}); setMemos(p.memos || {});
+          setOverrides(p.overrides || {});
+          setDeletedIds(new Set(p.deletedIds || []));
+        } else { setStatuses({}); setCompletedDates({}); setMemos({}); setOverrides({}); setDeletedIds(new Set()); }
+        const rm = await localStore.get(MEMO_ALL_KEY);
+        const loadedMemos = rm && rm.value ? JSON.parse(rm.value) : {};
+        setAllMemos(function(prev){ return Object.assign({}, prev, loadedMemos); });
+        const rc = await localStore.get(CUSTOM_ALL_KEY);
+        setCustomTasks(rc && rc.value ? JSON.parse(rc.value) : {});
+      } catch (e) { setStatuses({}); setCompletedDates({}); setMemos({}); setAllMemos({}); setCustomTasks({}); }
+      setStorageReady(true);
+    })();
+  }, [year]);
+
+  useEffect(function() {
+    if (!storageReady) return;
+    (async function() { try { await localStore.set(STORAGE_KEY, JSON.stringify({ statuses:statuses, completedDates:completedDates, memos:memos, overrides:overrides, deletedIds: Array.from(deletedIds) })); } catch(e){} })();
+  }, [statuses, completedDates, memos, overrides, deletedIds, storageReady]);
+
+  useEffect(function() {
+    if (!storageReady) return;
+    const updated = Object.assign({}, allMemos);
+    updated[year] = memos;
+    setAllMemos(updated);
+    (async function() { try { await localStore.set(MEMO_ALL_KEY, JSON.stringify(updated)); } catch(e){} })();
+  }, [memos, storageReady]);
+
+  useEffect(function() {
+    if (!storageReady) return;
+    (async function() { try { await localStore.set(CUSTOM_ALL_KEY, JSON.stringify(customTasks)); } catch(e){} })();
+  }, [customTasks, storageReady]);
+
+  useEffect(function() {
+    if (!storageReady) return;
+    const today2 = new Date();
+    const cutoff = new Date(today2.getFullYear(), today2.getMonth() - 1, 15);
+    cutoff.setHours(23, 59, 59, 999);
+    setStatuses(function(prev) {
+      const tasks2 = buildTasks(year);
+      const custom2 = (customTasks[year] || []).map(function(t){ return Object.assign({}, t, { date: new Date(year, t.month-1, t.day) }); });
+      const targets = tasks2.concat(custom2).filter(function(t){
+        return t.category !== "行事" && t.date <= cutoff && prev[t.id] !== "完了済み";
+      });
+      if (targets.length === 0) return prev;
+      const next = Object.assign({}, prev);
+      targets.forEach(function(t){ next[t.id] = "完了済み"; });
+      const now = new Date().toISOString();
+      setCompletedDates(function(cd) {
+        const ncd = Object.assign({}, cd);
+        targets.forEach(function(t){ if (!ncd[t.id]) ncd[t.id] = now; });
+        return ncd;
+      });
+      return next;
+    });
+  }, [storageReady]);
+
+  useEffect(function() {
+    if (!storageReady || notifShown.current) return;
+    notifShown.current = true;
+    const tasks = buildTasks(year);
+    const custom = (customTasks[year] || []).map(function(t){ return Object.assign({}, t, { date: new Date(year, t.month-1, t.day) }); });
+    const urgent = tasks.concat(custom).filter(function(t) {
+      const days = getDaysUntil(t.date);
+      return days >= 0 && days <= 7 && (statuses[t.id] || "実行前") !== "完了済み";
+    });
+    if (urgent.length > 0) setNotification("今週中に期限のタスクが " + urgent.length + " 件あります。");
+  }, [storageReady]);
+
+  const baseTasks = useMemo(function(){ return buildTasks(year); }, [year]);
+  const allTasks = useMemo(function() {
+    const custom = (customTasks[year] || []).map(function(t) {
+      return Object.assign({}, t, { date: t.noDate ? null : new Date(year, t.month-1, t.day) });
+    });
+    const base = baseTasks
+      .filter(function(t){ return !deletedIds.has(t.id); })
+      .map(function(t) {
+        if (overrides[t.id]) {
+          const ov = overrides[t.id];
+          return Object.assign({}, t, ov, { date: new Date(year, (ov.month||t.month)-1, ov.day||t.day) });
+        }
+        return t;
+      });
+    const dated = base.concat(custom.filter(function(t){ return !t.noDate; })).sort(function(a,b){ return a.date - b.date; });
+    const noDated = custom.filter(function(t){ return t.noDate; });
+    return dated.concat(noDated);
+  }, [baseTasks, customTasks, year, overrides, deletedIds]);
+
+  const filtered = useMemo(function() {
+    const list = allTasks.filter(function(t) {
+      if (filterCat !== "すべて" && t.category !== filterCat) return false;
+      const st = statuses[t.id] || "実行前";
+      if (filterStatus !== "すべて") {
+        if (t.category === "行事") return false;
+        if (st !== filterStatus) return false;
+      }
+      if (!t.noDate && filterMonth !== 0 && t.month !== filterMonth) return false;
+      return true;
+    });
+    return list.sort(function(a, b) {
+      if (a.noDate && b.noDate) return 0;
+      if (a.noDate) return 1;
+      if (b.noDate) return -1;
+      const sa = statuses[a.id] || "実行前";
+      const sb = statuses[b.id] || "実行前";
+      const aDone = a.category !== "行事" && sa === "完了済み" ? 1 : 0;
+      const bDone = b.category !== "行事" && sb === "完了済み" ? 1 : 0;
+      if (aDone !== bDone) return aDone - bDone;
+      return a.date - b.date;
+    });
+  }, [allTasks, filterCat, filterStatus, filterMonth, statuses]);
+
+  function setStatus(id, newStatus) {
+    setStatuses(function(prev){ const n = Object.assign({}, prev); n[id] = newStatus; return n; });
+    if (newStatus === "完了済み") {
+      setCompletedDates(function(prev){ const n = Object.assign({}, prev); n[id] = new Date().toISOString(); return n; });
+    } else {
+      setCompletedDates(function(prev){ const n = Object.assign({}, prev); delete n[id]; return n; });
+    }
+  }
+  function saveMemo(id, text) { setMemos(function(prev){ const n = Object.assign({}, prev); n[id] = text; return n; }); }
+  function handleTouchStart(e) {
+    touchStartX.current = e.touches[0].clientX;
+  }
+  function handleTouchEnd(e) {
+    if (touchStartX.current === null) return;
+    const diff = touchStartX.current - e.changedTouches[0].clientX;
+    if (Math.abs(diff) < 50) return;
+    if (diff > 0) {
+      setFilterMonth(function(prev) {
+        if (prev === 0) return today.getMonth() + 1;
+        return prev === 12 ? 1 : prev + 1;
+      });
+    } else {
+      setFilterMonth(function(prev) {
+        if (prev === 0) return today.getMonth() + 1;
+        return prev === 1 ? 12 : prev - 1;
+      });
+    }
+    touchStartX.current = null;
+  }
+
+  function addCustomTask() {
+    const id = "custom-" + Date.now();
+    setCustomTasks(function(prev) {
+      const n = Object.assign({}, prev);
+      n[year] = (prev[year]||[]).concat([Object.assign({}, newTask, { id: id })]);
+      return n;
+    });
+    setShowAddModal(false);
+    setNewTask({ name:"", category:"行事", month:1, day:1, recurrence:"単発", noDate:false });
+  }
+  function saveEditTask() {
+    if (!editTask) return;
+    if (editTask.id.indexOf("custom-") === 0) {
+      setCustomTasks(function(prev) {
+        const n = Object.assign({}, prev);
+        n[year] = (prev[year] || []).map(function(t){ return t.id === editTask.id ? Object.assign({}, editTask) : t; });
+        return n;
+      });
+    } else {
+      setOverrides(function(prev) {
+        const n = Object.assign({}, prev);
+        n[editTask.id] = { name: editTask.name, category: editTask.category, month: editTask.month, day: editTask.day, recurrence: editTask.recurrence };
+        return n;
+      });
+    }
+    setEditTask(null);
+  }
+  function deleteTask(task) {
+    if (!window.confirm("「" + task.name + "」を削除しますか？")) return;
+    if (task.id.indexOf("custom-") === 0) {
+      removeCustomTask(task.id);
+    } else {
+      setDeletedIds(function(prev) { const n = new Set(prev); n.add(task.id); return n; });
+    }
+  }
+  function removeCustomTask(id) {
+    setCustomTasks(function(prev) {
+      const n = Object.assign({}, prev);
+      n[year] = (prev[year]||[]).filter(function(t){ return t.id !== id; });
+      return n;
+    });
+    setStatuses(function(prev){ const n = Object.assign({}, prev); delete n[id]; return n; });
+    setMemos(function(prev){ const n = Object.assign({}, prev); delete n[id]; return n; });
+  }
+
+  const urgentCount = allTasks.filter(function(t) {
+    const days = getDaysUntil(t.date);
+    return days >= 0 && days <= 14 && (statuses[t.id]||"実行前") !== "完了済み";
+  }).length;
+  const completedCount = allTasks.filter(function(t) {
+    return t.category !== "行事" && (statuses[t.id]||"実行前") === "完了済み";
+  }).length;
+
+  const noDateTasks = filtered.filter(function(t){ return t.noDate && (statuses[t.id]||"実行前") !== "完了済み"; });
+  const noDateDone  = filtered.filter(function(t){ return t.noDate && (statuses[t.id]||"実行前") === "完了済み"; });
+  const allNoDateTasks = allTasks.filter(function(t){ return t.noDate && (filterCat==="すべて"||t.category===filterCat) && (statuses[t.id]||"実行前") !== "完了済み"; });
+  const allNoDateDone  = allTasks.filter(function(t){ return t.noDate && (filterCat==="すべて"||t.category===filterCat) && (statuses[t.id]||"実行前") === "完了済み"; });
+
+  const activeTasks = filtered.filter(function(t) {
+    if (t.noDate) return false;
+    if (t.category === "行事") {
+      return getDaysUntil(t.date) >= 0;
+    }
+    return (statuses[t.id]||"実行前") !== "完了済み";
+  });
+  const doneTasks = filtered.filter(function(t) {
+    if (t.noDate) return false;
+    if (t.category === "行事") {
+      return getDaysUntil(t.date) < 0;
+    }
+    return (statuses[t.id]||"実行前") === "完了済み";
+  });
+
+  const S = {
+    app: { height:"100vh", display:"flex", flexDirection:"column", background:"#faf8f2", fontFamily:"'Noto Serif JP','Yu Mincho',serif", color:"#2c1f14", overflow:"hidden" },
+    header: { background:"linear-gradient(135deg,#3d2b1f 0%,#6b4c8a 100%)", padding:"12px 20px 10px", color:"#fff" },
+    stats: { display:"flex", gap:10, marginBottom:14 },
+    statBox: { background:"rgba(255,255,255,0.15)", borderRadius:10, padding:"8px 12px", fontSize:"0.72rem", backdropFilter:"blur(4px)" },
+    statNum: { fontSize:"1.35rem", fontWeight:700, display:"block", lineHeight:1.2 },
+    yearNav: { display:"flex", alignItems:"center", gap:12 },
+    yearBtn: { background:"rgba(255,255,255,0.2)", border:"none", color:"#fff", width:30, height:30, borderRadius:"50%", cursor:"pointer", fontSize:"1rem" },
+    yearLabel: { fontSize:"1rem", fontWeight:700, letterSpacing:"0.05em" },
+    addBtn: { flexShrink:0, padding:"5px 14px", background:"#6b4c8a", color:"#fff", border:"none", borderRadius:99, cursor:"pointer", fontSize:"0.76rem", fontFamily:"inherit", fontWeight:600 },
+    monthScroll: { display:"flex", gap:5, padding:"9px 14px", overflowX:"auto", background:"#faf8f2", borderBottom:"1px solid #e5ddd5" },
+    taskList: { padding:"12px 13px", display:"flex", flexDirection:"column", gap:10 },
+    divider: { textAlign:"center", fontSize:"0.7rem", color:"#b0a090", padding:"6px 0 2px", letterSpacing:"0.1em" },
+    empty: { textAlign:"center", padding:"40px 20px", color:"#b0a090", fontSize:"0.85rem" },
+    modal: { position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", display:"flex", alignItems:"flex-end", zIndex:100 },
+    modalBox: { background:"#faf8f2", borderRadius:"20px 20px 0 0", padding:"24px 20px 36px", width:"100%", maxWidth:480, margin:"0 auto" },
+    modalTitle: { fontSize:"1rem", fontWeight:700, marginBottom:16, color:"#3d2b1f" },
+    label: { display:"block", fontSize:"0.73rem", color:"#7a5c3e", marginBottom:3, fontWeight:600 },
+    input: { width:"100%", padding:"9px 11px", borderRadius:10, border:"1.5px solid #d8cfc5", fontFamily:"inherit", fontSize:"0.84rem", marginBottom:11, boxSizing:"border-box", color:"#2c1f14", background:"#faf8f2" },
+    select: { width:"100%", padding:"9px 11px", borderRadius:10, border:"1.5px solid #d8cfc5", fontFamily:"inherit", fontSize:"0.84rem", marginBottom:11, background:"#faf8f2", color:"#2c1f14" },
+    modalBtns: { display:"flex", gap:10, marginTop:4 },
+    cancelBtn: { flex:1, padding:"10px", borderRadius:10, border:"1.5px solid #d8cfc5", background:"#faf8f2", color:"#7a5c3e", cursor:"pointer", fontFamily:"inherit", fontSize:"0.84rem" },
+    saveBtn: { flex:1, padding:"10px", borderRadius:10, border:"none", background:"#6b4c8a", color:"#fff", cursor:"pointer", fontFamily:"inherit", fontSize:"0.84rem", fontWeight:700 },
+    notifOverlay: { position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200 },
+    notifBox: { background:"#faf8f2", borderRadius:18, padding:"28px 24px 22px", maxWidth:320, width:"90%", textAlign:"center", boxShadow:"0 8px 32px rgba(0,0,0,0.18)" },
+    notifText: { fontSize:"0.9rem", color:"#3d2b1f", fontWeight:600, lineHeight:1.7, marginBottom:18 },
+    notifBtn: { padding:"9px 28px", background:"#6b4c8a", color:"#fff", border:"none", borderRadius:99, cursor:"pointer", fontFamily:"inherit", fontSize:"0.84rem", fontWeight:700 },
+  };
+
+  function fBtn(active, color, bg) {
+    return { padding:"4px 11px", borderRadius:99, border:"1.5px solid " + (active ? color : "#d1c4b8"), background: active ? bg : "#fff", color: active ? color : "#7a6a5a", cursor:"pointer", fontSize:"0.73rem", fontFamily:"inherit", fontWeight: active ? 700 : 400 };
+  }
+  function mBtn(active) {
+    return { flexShrink:0, padding:"4px 9px", borderRadius:99, border:"1.5px solid " + (active?"#6b4c8a":"#d1c4b8"), background: active?"#6b4c8a":"#fff", color: active?"#fff":"#6b5c4e", cursor:"pointer", fontSize:"0.7rem", fontFamily:"inherit", fontWeight: active?700:400 };
+  }
+  function stBtn(key, current) {
+    const active = current === key;
+    const cfg = STATUS_CONFIG[key];
+    return { flex:1, padding:"5px 3px", borderRadius:8, border:"1.5px solid " + (active?cfg.color:"rgba(0,0,0,0.12)"), background: active?cfg.bg:"rgba(255,255,255,0.55)", color: active?cfg.color:"#b0a090", cursor:"pointer", fontSize:"0.67rem", fontFamily:"inherit", fontWeight: active?700:400 };
+  }
+
+  const catFilters = ["すべて","行事","発送","発注","私用"];
+  const stFilters  = ["実行前","実行中","完了済み"];
+
+  function renderTask(task) {
+    const noDate = !!task.noDate;
+    const days = noDate ? null : getDaysUntil(task.date);
+    const status = statuses[task.id] || "実行前";
+    const isGyoji = task.category === "行事";
+    const isCustom = task.id.indexOf("custom-") === 0;
+    const cat = CATEGORY_CONFIG[task.category];
+    const memo = memos[task.id] || "";
+    const compDate = completedDates[task.id];
+    const memoOpen = openMemoId === task.id;
+    const pmKey = noDate ? { year: year, id: task.id } : prevMemoKey(task, year);
+    const prevYear = pmKey.year, prevId = pmKey.id;
+    const prevMemo = noDate ? "" : ((allMemos[prevYear] || {})[prevId] || "");
+    const gyojiDone = !noDate && isGyoji && getDaysUntil(task.date) < 0;
+    const cardStyle = noDate
+      ? { background:"rgba(150,140,125,0.08)", border:"1.5px dashed rgba(0,0,0,0.18)", borderRadius:14, opacity: status==="完了済み"?0.55:1, transition:"all 0.2s", boxShadow:"0 1px 4px rgba(0,0,0,0.06)" }
+      : getCardStyle(days, isGyoji ? (gyojiDone ? "完了済み" : "実行前") : status, task.category, isGyoji);
+    const dw = noDate ? { main:"", weekday:"" } : formatDateWithWeekday(task.month, task.day, year);
+    const dateMain = dw.main, weekday = dw.weekday;
+
+    return React.createElement('div', { key: task.id, style: Object.assign({}, cardStyle, { padding:"13px 13px 11px" }) },
+      React.createElement('div', { style:{ display:"flex", alignItems:"center", gap:7, marginBottom:8 } },
+        React.createElement('span', { style:{ display:"inline-flex", alignItems:"center", gap:3, padding:"2px 8px", borderRadius:99, background:cat.badgeBg, border:"1px solid " + cat.badgeBorder, color:cat.color, fontSize:"0.66rem", fontWeight:600, whiteSpace:"nowrap" } }, cat.icon + " " + task.category),
+        React.createElement('span', { style:{ fontSize:"0.88rem", fontWeight:600, flex:1, color:"#1f1610" } }, task.name),
+        React.createElement('button', {
+          onClick: function(){ setOpenMemoId(memoOpen ? null : task.id); },
+          style:{ padding:"3px 7px", borderRadius:7, border:"1.5px solid " + (memo?cat.color:"rgba(0,0,0,0.12)"), background: memo?cat.badgeBg:"rgba(255,255,255,0.55)", color: memo?cat.color:"#b0a090", cursor:"pointer", fontSize:"0.72rem", flexShrink:0 },
+          title:"メモ"
+        }, memo ? "📋" : "🗒️"),
+        React.createElement('button', {
+          onClick: function(){
+            const ov = overrides[task.id] || {};
+            setEditTask(Object.assign({}, task, {
+              month: ov.month || task.month, day: ov.day || task.day,
+              name: ov.name || task.name, category: ov.category || task.category,
+              recurrence: ov.recurrence || task.recurrence
+            }));
+          },
+          style:{ padding:"3px 7px", borderRadius:7, border:"1.5px solid rgba(0,0,0,0.12)", background:"rgba(255,255,255,0.55)", color:"#7a6a5a", cursor:"pointer", fontSize:"0.72rem", flexShrink:0 },
+          title:"編集"
+        }, "✏️")
+      ),
+      React.createElement('div', { style:{ display:"flex", alignItems:"baseline", justifyContent:"space-between", gap:6, marginBottom:4 } },
+        React.createElement('div', { style:{ display:"flex", alignItems:"baseline", gap:4, flexWrap:"wrap" } },
+          noDate
+            ? React.createElement('span', { style:{ fontSize:"0.82rem", fontWeight:700, color:"#7a6a5a" } }, "フリー")
+            : React.createElement(React.Fragment, null,
+                React.createElement('span', { style:{ fontSize:"1.15rem", fontWeight:700, color:"#2c1f14", letterSpacing:"0.02em" } }, dateMain),
+                React.createElement('span', { style:{ fontSize:"1rem", fontWeight:700, color:cat.color } }, weekday)
+              ),
+          React.createElement('span', { style:{ fontSize:"0.68rem", color:"#9c7c5a" } }, task.recurrence)
+        ),
+        !noDate && React.createElement(UrgencyBadge, { days: days, isGyoji: isGyoji, isDone: !isGyoji && status === "完了済み" })
+      ),
+      (!isGyoji || noDate) && compDate && React.createElement('div', { style:{ marginBottom:6 } },
+        React.createElement('span', { style:{ fontSize:"0.66rem", color:"#166534", background:"rgba(220,252,231,0.8)", padding:"1px 7px", borderRadius:99 } }, "完了日：" + formatDate(compDate))
+      ),
+      (!isGyoji || noDate) && React.createElement('div', { style:{ display:"flex", gap:4, marginBottom:(memo||memoOpen||prevMemo)?8:0, marginTop:8 } },
+        Object.keys(STATUS_CONFIG).map(function(key) {
+          return React.createElement('button', { key: key, style: Object.assign({}, stBtn(key, status), { flex:1 }), onClick: function(){ setStatus(task.id, key); } }, STATUS_CONFIG[key].label);
+        })
+      ),
+      prevMemo && React.createElement('div', { style:{ fontSize:"0.7rem", color:"#8b6340", background:"rgba(253,245,230,0.85)", border:"1px solid rgba(232,213,168,0.8)", borderRadius:8, padding:"5px 9px", marginBottom:6, lineHeight:1.6 } },
+        React.createElement('span', { style:{ fontWeight:700, marginRight:6 } }, "📋 " + (task.recurrence === "毎月" ? "前月メモ" : (prevYear + "年のメモ"))),
+        React.createElement('span', { style:{ whiteSpace:"pre-wrap" } }, prevMemo)
+      ),
+      memoOpen && React.createElement('textarea', {
+        value: memo,
+        onChange: function(e){ saveMemo(task.id, e.target.value); },
+        placeholder: "メモを入力（例：印刷部数750部、昨年発送日10月20日）",
+        style:{ width:"100%", minHeight:68, padding:"8px 10px", borderRadius:9, border:"1.5px solid " + cat.badgeBorder, fontFamily:"inherit", fontSize:"0.78rem", boxSizing:"border-box", resize:"vertical", background:"rgba(255,255,255,0.8)", color:"#2c1f14", lineHeight:1.6 }
+      }),
+      !memoOpen && memo && React.createElement('div', { style:{ fontSize:"0.72rem", color:cat.color, background:cat.badgeBg+"cc", borderRadius:8, padding:"5px 9px", marginTop:2, lineHeight:1.6, whiteSpace:"pre-wrap" } }, memo)
+    );
+  }
+
+  function renderCalendar() {
+    const m = filterMonth === 0 ? today.getMonth() + 1 : filterMonth;
+    const firstDay = new Date(year, m - 1, 1).getDay();
+    const lastDate = new Date(year, m, 0).getDate();
+    const WDAYS = ["月","火","水","木","金","土","日"];
+    const adjustedFirst = (firstDay + 6) % 7;
+
+    const taskMap = {};
+    allTasks.forEach(function(t) {
+      if (t.month !== m) return;
+      if (!taskMap[t.day]) taskMap[t.day] = [];
+      taskMap[t.day].push(t);
+    });
+
+    const cells = [];
+    for (let i = 0; i < adjustedFirst; i++) cells.push(null);
+    for (let d = 1; d <= lastDate; d++) cells.push(d);
+    while (cells.length % 7 !== 0) cells.push(null);
+
+    function isTod(d){ return d === today.getDate() && m === today.getMonth()+1 && year === today.getFullYear(); }
+    function colIdx(ci){ return ci % 7; }
+    function isSun(ci){ return colIdx(ci) === 6; }
+    function isSat(ci){ return colIdx(ci) === 5; }
+
+    const selTasks = selectedDay ? (taskMap[selectedDay] || []) : [];
+    const selActive = selTasks.filter(function(t){ return t.category === "行事" ? getDaysUntil(t.date) >= 0 : (statuses[t.id]||"実行前") !== "完了済み"; });
+    const selDone   = selTasks.filter(function(t){ return t.category === "行事" ? getDaysUntil(t.date) < 0  : (statuses[t.id]||"実行前") === "完了済み"; });
+
+    function openAddForDay(d) {
+      setNewTask(function(prev){ return Object.assign({}, prev, { month: m, day: d, recurrence: "単発" }); });
+      setShowAddModal(true);
+    }
+
+    const CAL_BG   = "#faf8f2";
+    const CAL_LINE = "#c8bfaa";
+    const CAL_HEAD = "#3a2c1a";
+
+    return React.createElement('div', { onTouchStart: handleTouchStart, onTouchEnd: handleTouchEnd, style:{ background: CAL_BG, paddingBottom:40 } },
+      React.createElement('div', { style:{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", borderBottom:"1px solid "+CAL_LINE, background:CAL_BG } },
+        WDAYS.map(function(w,i){
+          return React.createElement('div', { key: w, style:{ textAlign:"center", fontSize:"0.65rem", fontWeight:700, letterSpacing:"0.05em",
+            color: i===6?"#b03030": i===5?"#2a4a8a":"#5a4a3a",
+            padding:"4px 0", borderRight: i<6?("1px solid "+CAL_LINE):"none",
+            background: i===6?"rgba(176,48,48,0.04)": i===5?"rgba(42,74,138,0.04)":"transparent"
+          } }, w);
+        })
+      ),
+      React.createElement('div', { style:{ display:"grid", gridTemplateColumns:"repeat(7,1fr)" } },
+        cells.map(function(d,i) {
+          const tasks = d ? (taskMap[d]||[]) : [];
+          const tod = d && isTod(d);
+          const sel = d && d === selectedDay;
+          const sun = isSun(i), sat = isSat(i);
+          const holi = d && isHoliday(year, m, d);
+          const isRed = sun || holi;
+          const rowEnd = (i+1) % 7 === 0;
+          const hasGyoji = tasks.some(function(t){ return t.category === "行事"; });
+          let cellBg = "transparent";
+          if (sel)      cellBg = "rgba(107,76,138,0.10)";
+          else if (tod) cellBg = "rgba(107,76,138,0.05)";
+          else if (isRed) cellBg = "rgba(176,48,48,0.04)";
+          else if (sat)   cellBg = "rgba(42,74,138,0.04)";
+          return React.createElement('div', {
+            key: i,
+            onClick: function(){ if (d) setSelectedDay(sel ? null : d); },
+            style: {
+              minHeight:56, padding:"5px 4px 4px",
+              borderRight: !rowEnd ? ("1px solid "+CAL_LINE) : "none",
+              borderBottom: "1px solid "+CAL_LINE,
+              outline: hasGyoji ? "2px solid rgba(107,76,138,0.55)" : "none",
+              outlineOffset: "-2px",
+              background: cellBg,
+              cursor: d?"pointer":"default",
+              position:"relative",
+            }
+          },
+            d && React.createElement(React.Fragment, null,
+              React.createElement('div', { style:{ textAlign:"center", marginBottom:3 } },
+                tod
+                  ? React.createElement('span', { style:{ display:"inline-flex", alignItems:"center", justifyContent:"center",
+                      width:20, height:20, borderRadius:"50%", background:"#6b4c8a",
+                      color:"#fff", fontSize:"0.72rem", fontWeight:700 } }, d)
+                  : React.createElement('span', { style:{ fontSize:"0.72rem", fontWeight: sel?700:400,
+                      color: isRed?"#b03030": sat?"#2a4a8a":"#3a2c1a" } }, d)
+              ),
+              React.createElement('div', { style:{ display:"flex", flexWrap:"wrap", gap:2, justifyContent:"center" } },
+                tasks.map(function(t,j){
+                  const cat = CATEGORY_CONFIG[t.category];
+                  return React.createElement('span', { key: j, style:{ width:6, height:6, borderRadius:"50%", background:cat.dotColor || cat.color, display:"inline-block", flexShrink:0 } });
+                })
+              )
+            )
+          );
+        })
+      ),
+      React.createElement('div', { style:{ display:"flex", gap:14, padding:"8px 16px", borderBottom:"1px solid "+CAL_LINE } },
+        Object.keys(CATEGORY_CONFIG).map(function(k) {
+          const v = CATEGORY_CONFIG[k];
+          return React.createElement('span', { key: k, style:{ fontSize:"0.63rem", color:"#5a4a3a", display:"flex", alignItems:"center", gap:4 } },
+            React.createElement('span', { style:{ width:7, height:7, borderRadius:"50%", background:v.color, display:"inline-block" } }),
+            v.icon + " " + k
+          );
+        })
+      ),
+      React.createElement('div', { style:{ padding:"14px 13px" } },
+        selectedDay
+          ? React.createElement(React.Fragment, null,
+              React.createElement('div', { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 } },
+                React.createElement('div', { style:{ fontSize:"1rem", fontWeight:700, color:CAL_HEAD } }, m + "月" + selectedDay + "日（" + WEEKDAYS[new Date(year,m-1,selectedDay).getDay()] + "）"),
+                React.createElement('button', { onClick: function(){ setSelectedDay(null); }, style:{ background:"none", border:"none", fontSize:"1rem", color:"#9c7c5a", cursor:"pointer" } }, "✕")
+              ),
+              (selActive.length===0 && selDone.length===0)
+                ? React.createElement('div', { style:{ textAlign:"center", color:"#b0a090", fontSize:"0.82rem", padding:"16px 0" } }, "タスクはありません")
+                : React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:10, marginBottom:10 } },
+                    selActive.map(renderTask),
+                    selDone.length>0 && React.createElement(React.Fragment, null,
+                      React.createElement('div', { style:S.divider }, "── 完了済み ──"),
+                      selDone.map(renderTask)
+                    )
+                  ),
+              React.createElement('button', {
+                onClick: function(){ openAddForDay(selectedDay); },
+                style:{ width:"100%", padding:"10px", borderRadius:12,
+                  border:"1.5px dashed "+CAL_LINE, background:"rgba(250,248,242,0.9)",
+                  color:"#7a5c3e", cursor:"pointer", fontFamily:"inherit",
+                  fontSize:"0.82rem", fontWeight:600, letterSpacing:"0.05em" }
+              }, "＋ この日にタスクを追加")
+            )
+          : React.createElement(React.Fragment, null,
+              React.createElement('div', { style:{ fontSize:"0.72rem", color:"#9c7c5a", fontWeight:700, marginBottom:10, letterSpacing:"0.08em" } }, m + "月のタスク一覧"),
+              (activeTasks.length===0 && doneTasks.length===0)
+                ? React.createElement('div', { style:S.empty }, "タスクがありません")
+                : React.createElement('div', { style:{ display:"flex", flexDirection:"column", gap:10 } },
+                    activeTasks.map(renderTask),
+                    doneTasks.length > 0 && React.createElement(React.Fragment, null,
+                      React.createElement('div', { style:S.divider }, "── 完了済み ──"),
+                      doneTasks.map(renderTask)
+                    )
+                  )
+            )
+      )
+    );
+  }
+
+  if (!storageReady) {
+    return React.createElement('div', { style:{ minHeight:"100vh", background:"#faf8f2", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Noto Serif JP',serif", color:"#7a5c3e", fontSize:"0.9rem" } }, "読み込み中…");
+  }
+
+  return React.createElement('div', { style: S.app },
+    notification && React.createElement('div', { style: S.notifOverlay },
+      React.createElement('div', { style: S.notifBox },
+        React.createElement('div', { style:{ fontSize:"2rem", marginBottom:10 } }, "🔔"),
+        React.createElement('div', { style: S.notifText }, notification),
+        React.createElement('button', { style: S.notifBtn, onClick: function(){ setNotification(null); } }, "確認しました")
+      )
+    ),
+    React.createElement('div', { style:{ flexShrink:0 } },
+      React.createElement('div', { style: S.header },
+        React.createElement('div', { style:{ marginBottom:8 } },
+          React.createElement('span', { style:{ fontSize:"1.05rem", fontWeight:700, letterSpacing:"0.04em", color:"#fff" } }, today.getFullYear() + "年" + (today.getMonth()+1) + "月" + today.getDate() + "日"),
+          React.createElement('span', { style:{ fontSize:"0.95rem", fontWeight:700, color:"rgba(255,255,255,0.75)", marginLeft:6 } }, "（" + WEEKDAYS[today.getDay()] + "）")
+        ),
+        React.createElement('div', { style:{ display:"flex", alignItems:"center", justifyContent:"space-between" } },
+          React.createElement('div', { style: S.yearNav },
+            React.createElement('button', { style: Object.assign({}, S.yearBtn, { opacity:year<=MIN_YEAR?0.35:1 }), onClick: function(){ setYear(function(y){ return Math.max(MIN_YEAR, y-1); }); }, disabled: year<=MIN_YEAR }, "‹"),
+            React.createElement('span', { style: S.yearLabel }, year + "年"),
+            React.createElement('button', { style: S.yearBtn, onClick: function(){ setYear(function(y){ return y+1; }); } }, "›")
+          ),
+          React.createElement('div', { style:{ display:"flex", gap:4 } },
+            React.createElement('button', { onClick: function(){ setViewMode("list"); }, style:{ padding:"5px 11px", borderRadius:8, border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:"0.72rem", fontWeight:viewMode==="list"?700:400, background:viewMode==="list"?"rgba(255,255,255,0.9)":"rgba(255,255,255,0.2)", color:viewMode==="list"?"#6b4c8a":"rgba(255,255,255,0.8)" } }, "☰ 一覧"),
+            React.createElement('button', { onClick: function(){ setViewMode("calendar"); if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0; }, style:{ padding:"5px 11px", borderRadius:8, border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:"0.72rem", fontWeight:viewMode==="calendar"?700:400, background:viewMode==="calendar"?"rgba(255,255,255,0.9)":"rgba(255,255,255,0.2)", color:viewMode==="calendar"?"#6b4c8a":"rgba(255,255,255,0.8)" } }, "📅 カレンダー"),
+            React.createElement('button', { onClick: function(){ setViewMode("free"); if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0; }, style:{ padding:"5px 11px", borderRadius:8, border: (allTasks.some(function(t){ return t.noDate && (statuses[t.id]||"実行前") !== "完了済み"; }) && viewMode!=="free") ? "1.5px solid #f59e0b" : "1.5px solid transparent", cursor:"pointer", fontFamily:"inherit", fontSize:"0.72rem", fontWeight:viewMode==="free"?700:400, background:viewMode==="free"?"rgba(255,255,255,0.9)":"rgba(255,255,255,0.2)", color:viewMode==="free"?"#6b4c8a":"rgba(255,255,255,0.8)" } }, "📌 フリー")
+          )
+        )
+      ),
+      viewMode !== "free" && React.createElement('div', { style:{ background:"#faf8f2", borderBottom:"1px solid #e5ddd5", padding:"10px 14px", display:"flex", flexDirection:"column", gap:7 } },
+        React.createElement('div', { style:{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" } },
+          React.createElement('span', { style:{ fontSize:"0.63rem", color:"#9c7c5a", fontWeight:700, minWidth:36 } }, "カテゴリ"),
+          catFilters.map(function(c) {
+            const cfg = c !== "すべて" ? CATEGORY_CONFIG[c] : null;
+            return React.createElement('button', { key: c, style: fBtn(filterCat===c, cfg?cfg.color:"#6b4c8a", cfg?cfg.badgeBg:"#f3eef8"), onClick: function(){ setFilterCat(c); } }, (cfg ? cfg.icon+" " : "") + c);
+          })
+        ),
+        React.createElement('div', { style:{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" } },
+          React.createElement('span', { style:{ fontSize:"0.63rem", color:"#9c7c5a", fontWeight:700, minWidth:36 } }, "状況"),
+          stFilters.map(function(s) {
+            const cfg = STATUS_CONFIG[s];
+            return React.createElement('button', { key: s, style: fBtn(filterStatus===s, cfg.color, cfg.bg), onClick: function(){ setFilterStatus(filterStatus===s?"すべて":s); } }, s);
+          }),
+          React.createElement('button', { style: Object.assign({}, S.addBtn, { marginLeft:"auto" }), onClick: function(){ setShowAddModal(true); } }, "＋ 追加")
+        )
+      ),
+      viewMode !== "free" && React.createElement('div', { style: S.monthScroll },
+        viewMode === "list" && React.createElement('button', { style: mBtn(filterMonth===0), onClick: function(){ setFilterMonth(0); } }, "全月"),
+        [...Array(12)].map(function(_,i) {
+          return React.createElement('button', { key: i+1, style: mBtn(filterMonth===i+1), onClick: function(){ setFilterMonth(filterMonth===i+1?0:i+1); } }, (i+1) + "月");
+        })
+      )
+    ),
+    React.createElement('div', { ref: scrollContainerRef, style:{ flex:1, overflowY:"auto", WebkitOverflowScrolling:"touch" } },
+      viewMode === "calendar"
+        ? renderCalendar()
+        : viewMode === "free"
+          ? React.createElement('div', { style: S.taskList },
+              (allNoDateTasks.length === 0 && allNoDateDone.length === 0)
+                ? React.createElement('div', { style: S.empty }, "フリータスクはありません")
+                : React.createElement(React.Fragment, null,
+                    allNoDateTasks.map(renderTask),
+                    allNoDateDone.length > 0 && React.createElement(React.Fragment, null,
+                      React.createElement('div', { style: S.divider }, "── 完了済み ──"),
+                      allNoDateDone.map(renderTask)
+                    )
+                  ),
+              React.createElement('button', {
+                onClick: function(){ setNewTask(function(p){ return Object.assign({}, p, { noDate:true }); }); setShowAddModal(true); },
+                style:{ width:"100%", padding:"12px", borderRadius:12, border:"1.5px dashed #c8bfaa", background:"rgba(255,255,255,0.6)", color:"#7a5c3e", cursor:"pointer", fontFamily:"inherit", fontSize:"0.85rem", fontWeight:600, marginTop:4 }
+              }, "＋ フリータスクを追加")
+            )
+          : React.createElement('div', { style: S.taskList, onTouchStart: handleTouchStart, onTouchEnd: handleTouchEnd },
+              filtered.length === 0
+                ? React.createElement('div', { style: S.empty }, "該当するタスクがありません")
+                : React.createElement(React.Fragment, null,
+                    activeTasks.map(renderTask),
+                    doneTasks.length > 0 && React.createElement(React.Fragment, null,
+                      React.createElement('div', { style: S.divider }, "── 完了済み ──"),
+                      doneTasks.map(renderTask)
+                    )
+                  ),
+              (noDateTasks.length > 0 || noDateDone.length > 0) && React.createElement(React.Fragment, null,
+                React.createElement('div', { style: S.divider }, "── フリー ──"),
+                noDateTasks.map(renderTask),
+                noDateDone.length > 0 && React.createElement(React.Fragment, null,
+                  React.createElement('div', { style: S.divider }, "── フリー・完了済み ──"),
+                  noDateDone.map(renderTask)
+                )
+              )
+            )
+    ),
+    editTask && React.createElement('div', { style: S.modal, onClick: function(e){ if (e.target===e.currentTarget) setEditTask(null); } },
+      React.createElement('div', { style: S.modalBox },
+        React.createElement('p', { style: S.modalTitle }, "タスクを編集"),
+        React.createElement('label', { style: S.label }, "タスク名"),
+        React.createElement('input', { style: S.input, value: editTask.name, onChange: function(e){ setEditTask(function(p){ return Object.assign({}, p, { name: e.target.value }); }); } }),
+        React.createElement('label', { style: S.label }, "カテゴリ"),
+        React.createElement('select', { style: S.select, value: editTask.category, onChange: function(e){ setEditTask(function(p){ return Object.assign({}, p, { category: e.target.value }); }); } },
+          React.createElement('option', null, "行事"), React.createElement('option', null, "発送"), React.createElement('option', null, "発注"), React.createElement('option', null, "私用")
+        ),
+        editTask.id.indexOf("custom-") === 0 && React.createElement('label', { style:{ display:"flex", alignItems:"center", gap:8, marginBottom:11, cursor:"pointer", fontSize:"0.82rem", color:"#5a4a3a" } },
+          React.createElement('input', { type:"checkbox", checked: !!editTask.noDate, onChange: function(e){ setEditTask(function(p){ return Object.assign({}, p, { noDate: e.target.checked }); }); }, style:{ width:16, height:16 } }),
+          "日時を指定しない"
+        ),
+        !editTask.noDate && React.createElement(React.Fragment, null,
+          React.createElement('div', { style:{ display:"flex", gap:10 } },
+            React.createElement('div', { style:{ flex:1 } },
+              React.createElement('label', { style: S.label }, "月"),
+              React.createElement('select', { style: S.select, value: editTask.month, onChange: function(e){ setEditTask(function(p){ return Object.assign({}, p, { month: Number(e.target.value) }); }); } },
+                [...Array(12)].map(function(_,i){ return React.createElement('option', { key: i+1, value: i+1 }, (i+1)+"月"); })
+              )
+            ),
+            React.createElement('div', { style:{ flex:1 } },
+              React.createElement('label', { style: S.label }, "日"),
+              React.createElement('select', { style: S.select, value: editTask.day, onChange: function(e){ setEditTask(function(p){ return Object.assign({}, p, { day: Number(e.target.value) }); }); } },
+                [...Array(31)].map(function(_,i){ return React.createElement('option', { key: i+1, value: i+1 }, (i+1)+"日"); })
+              )
+            )
+          ),
+          React.createElement('label', { style: S.label }, "繰り返し"),
+          React.createElement('select', { style: S.select, value: editTask.recurrence, onChange: function(e){ setEditTask(function(p){ return Object.assign({}, p, { recurrence: e.target.value }); }); } },
+            React.createElement('option', null, "単発"), React.createElement('option', null, "毎年"), React.createElement('option', null, "毎月")
+          )
+        ),
+        React.createElement('div', { style: S.modalBtns },
+          React.createElement('button', { style: S.cancelBtn, onClick: function(){ setEditTask(null); } }, "キャンセル"),
+          React.createElement('button', { style: S.saveBtn, onClick: saveEditTask, disabled: !editTask.name.trim() }, "保存する")
+        ),
+        React.createElement('div', { style:{ display:"flex", gap:8, marginTop:10 } },
+          React.createElement('button', {
+            onClick: function() {
+              const id = "custom-" + Date.now();
+              const dup = { id: id, name: editTask.name + "（複製）", category: editTask.category, month: editTask.month, day: editTask.day, recurrence: editTask.recurrence };
+              setCustomTasks(function(prev) {
+                const n = Object.assign({}, prev);
+                n[year] = (prev[year]||[]).concat([dup]);
+                return n;
+              });
+              setEditTask(dup);
+            },
+            style:{ flex:1, padding:"9px", borderRadius:10, border:"1.5px solid #8ec4e8", background:"#eaf3fb", color:"#1a5c8a", cursor:"pointer", fontFamily:"inherit", fontSize:"0.82rem", fontWeight:600 }
+          }, "📄 複製して編集"),
+          React.createElement('button', {
+            onClick: function() {
+              if (window.confirm("「" + editTask.name + "」を削除しますか？\nこの操作は元に戻せません。")) {
+                deleteTask(editTask);
+                setEditTask(null);
+              }
+            },
+            style:{ flex:1, padding:"9px", borderRadius:10, border:"1.5px solid #e0c4c4", background:"#fdf0f0", color:"#b03030", cursor:"pointer", fontFamily:"inherit", fontSize:"0.82rem", fontWeight:600 }
+          }, "🗑️ 削除")
+        )
+      )
+    ),
+    showAddModal && React.createElement('div', { style: S.modal, onClick: function(e){ if (e.target===e.currentTarget) setShowAddModal(false); } },
+      React.createElement('div', { style: S.modalBox },
+        React.createElement('p', { style: S.modalTitle }, "タスクを追加"),
+        React.createElement('label', { style: S.label }, "タスク名"),
+        React.createElement('input', { style: S.input, value: newTask.name, onChange: function(e){ setNewTask(function(p){ return Object.assign({}, p, { name: e.target.value }); }); }, placeholder:"例：○○法要 準備" }),
+        React.createElement('label', { style: S.label }, "カテゴリ"),
+        React.createElement('select', { style: S.select, value: newTask.category, onChange: function(e){ setNewTask(function(p){ return Object.assign({}, p, { category: e.target.value }); }); } },
+          React.createElement('option', null, "行事"), React.createElement('option', null, "発送"), React.createElement('option', null, "発注"), React.createElement('option', null, "私用")
+        ),
+        React.createElement('label', { style:{ display:"flex", alignItems:"center", gap:8, marginBottom:11, cursor:"pointer", fontSize:"0.82rem", color:"#5a4a3a" } },
+          React.createElement('input', { type:"checkbox", checked: !!newTask.noDate, onChange: function(e){ setNewTask(function(p){ return Object.assign({}, p, { noDate: e.target.checked }); }); }, style:{ width:16, height:16 } }),
+          "日時を指定しない"
+        ),
+        !newTask.noDate && React.createElement(React.Fragment, null,
+          React.createElement('div', { style:{ display:"flex", gap:10 } },
+            React.createElement('div', { style:{ flex:1 } },
+              React.createElement('label', { style: S.label }, "月"),
+              React.createElement('select', { style: S.select, value: newTask.month, onChange: function(e){ setNewTask(function(p){ return Object.assign({}, p, { month: Number(e.target.value) }); }); } },
+                [...Array(12)].map(function(_,i){ return React.createElement('option', { key: i+1, value: i+1 }, (i+1)+"月"); })
+              )
+            ),
+            React.createElement('div', { style:{ flex:1 } },
+              React.createElement('label', { style: S.label }, "日"),
+              React.createElement('select', { style: S.select, value: newTask.day, onChange: function(e){ setNewTask(function(p){ return Object.assign({}, p, { day: Number(e.target.value) }); }); } },
+                [...Array(31)].map(function(_,i){ return React.createElement('option', { key: i+1, value: i+1 }, (i+1)+"日"); })
+              )
+            )
+          ),
+          React.createElement('label', { style: S.label }, "繰り返し"),
+          React.createElement('select', { style: S.select, value: newTask.recurrence, onChange: function(e){ setNewTask(function(p){ return Object.assign({}, p, { recurrence: e.target.value }); }); } },
+            React.createElement('option', null, "単発"), React.createElement('option', null, "毎年"), React.createElement('option', null, "毎月")
+          )
+        ),
+        React.createElement('div', { style: S.modalBtns },
+          React.createElement('button', { style: S.cancelBtn, onClick: function(){ setShowAddModal(false); } }, "キャンセル"),
+          React.createElement('button', { style: S.saveBtn, onClick: addCustomTask, disabled: !newTask.name.trim() }, "追加する")
+        )
+      )
+    )
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(React.createElement(App));
+</script>
+</body>
+</html>
