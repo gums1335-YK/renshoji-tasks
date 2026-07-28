@@ -11,6 +11,9 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 <style>
   * { -webkit-tap-highlight-color: transparent; }
   html, body { margin:0; padding:0; height:100%; overscroll-behavior:none; }
@@ -23,8 +26,169 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useRef } = React;
 
+const SYNC_CONFIG_KEY = "renshoji_sync_cfg_v1";
+
+// CloudSync: optional realtime sync via Firebase Firestore, using a shared
+// "room code" instead of per-user login. Disabled until the user pastes a
+// Firebase project config in the share settings modal; until then the app
+// behaves exactly like local-only storage.
+const CloudSync = (function () {
+  let cfg = null;
+  let roomRef = null;
+  let unsubscribeSnap = null;
+  let docCache = {};
+  let status = "idle"; // idle | connecting | synced | offline | error
+  const statusListeners = new Set();
+  const dataListeners = new Set();
+  let firstSyncDone = false;
+  let firstSyncWaiters = [];
+
+  function loadConfig() {
+    try {
+      const raw = localStorage.getItem(SYNC_CONFIG_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  function persistConfig(c) {
+    try { localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(c)); } catch (e) {}
+  }
+  function clearConfig() {
+    try { localStorage.removeItem(SYNC_CONFIG_KEY); } catch (e) {}
+  }
+  function setStatus(s) {
+    status = s;
+    statusListeners.forEach(function (fn) { fn(s); });
+  }
+  function resolveFirstSync() {
+    if (firstSyncDone) return;
+    firstSyncDone = true;
+    firstSyncWaiters.forEach(function (fn) { fn(); });
+    firstSyncWaiters = [];
+  }
+  function stop() {
+    if (unsubscribeSnap) { unsubscribeSnap(); unsubscribeSnap = null; }
+    roomRef = null;
+    docCache = {};
+    setStatus("idle");
+  }
+  function start(newCfg) {
+    stop();
+    cfg = newCfg;
+    firstSyncDone = false;
+    firstSyncWaiters = [];
+    persistConfig(newCfg);
+    setStatus("connecting");
+    try {
+      const APP_NAME = "renshoji-cloud";
+      const existing = firebase.apps.find(function (a) { return a.name === APP_NAME; });
+      const app = existing || firebase.initializeApp(newCfg.firebaseConfig, APP_NAME);
+      app.auth().signInAnonymously().then(function () {
+        const db = app.firestore();
+        roomRef = db.collection("rooms").doc(newCfg.roomCode);
+        unsubscribeSnap = roomRef.onSnapshot(function (snap) {
+          docCache = snap.data() || {};
+          setStatus(snap.metadata.fromCache ? "offline" : "synced");
+          resolveFirstSync();
+          dataListeners.forEach(function (fn) { fn(docCache); });
+        }, function (err) {
+          console.error("[CloudSync] snapshot error", err);
+          setStatus("error");
+          resolveFirstSync();
+        });
+      }).catch(function (err) {
+        console.error("[CloudSync] auth error", err);
+        setStatus("error");
+        resolveFirstSync();
+      });
+    } catch (e) {
+      console.error("[CloudSync] init error", e);
+      setStatus("error");
+      resolveFirstSync();
+    }
+  }
+  function disconnectAndForget() {
+    stop();
+    clearConfig();
+    cfg = null;
+  }
+  function waitFirstSync(timeoutMs) {
+    if (!cfg) return Promise.resolve();
+    if (firstSyncDone) return Promise.resolve();
+    return new Promise(function (resolve) {
+      const timer = setTimeout(resolve, timeoutMs || 5000);
+      firstSyncWaiters.push(function () { clearTimeout(timer); resolve(); });
+    });
+  }
+  function getCached(key) {
+    return Object.prototype.hasOwnProperty.call(docCache, key) ? docCache[key] : null;
+  }
+  function setField(key, value) {
+    if (!roomRef) return;
+    const upd = {};
+    upd[key] = value;
+    roomRef.set(upd, { merge: true }).catch(function (err) {
+      console.error("[CloudSync] write error", err);
+      setStatus("error");
+    });
+  }
+  function isActive() { return !!roomRef; }
+  function isConfigured() { return !!loadConfig(); }
+  function getRoomCode() { return cfg ? cfg.roomCode : null; }
+
+  return {
+    loadConfig: loadConfig, isConfigured: isConfigured, start: start,
+    disconnectAndForget: disconnectAndForget, waitFirstSync: waitFirstSync,
+    getCached: getCached, setField: setField, isActive: isActive,
+    getRoomCode: getRoomCode,
+    onStatus: function (fn) { statusListeners.add(fn); return function () { statusListeners.delete(fn); }; },
+    onData: function (fn) { dataListeners.add(fn); return function () { dataListeners.delete(fn); }; },
+    getStatus: function () { return status; },
+  };
+})();
+
+function generateRoomCode() {
+  const words = ["yamabuki","sakura","fuji","kaede","matsu","tsubaki","ayame","botan","ume","hagi"];
+  const w = words[Math.floor(Math.random() * words.length)];
+  const n = Math.floor(1000 + Math.random() * 9000);
+  return w + "-" + n;
+}
+
+function parseFirebaseConfigInput(text) {
+  let t = (text || "").trim();
+  t = t.replace(/^(export\s+)?(const|let|var)\s+firebaseConfig\s*=\s*/, "");
+  t = t.replace(/;\s*$/, "");
+  let obj;
+  try {
+    obj = JSON.parse(t);
+  } catch (e1) {
+    try {
+      obj = Function('"use strict"; return (' + t + ')')();
+    } catch (e2) {
+      throw new Error("Firebase設定を読み取れませんでした。Firebaseコンソールの firebaseConfig をそのまま貼り付けてください。");
+    }
+  }
+  if (!obj || typeof obj !== "object" || !obj.apiKey || !obj.projectId) {
+    throw new Error("apiKey と projectId を含む firebaseConfig を貼り付けてください。");
+  }
+  return obj;
+}
+
+function syncStatusMeta(s) {
+  switch (s) {
+    case "synced": return { label: "同期済み", bg: "rgba(190,247,208,0.9)", color: "#0a5c2e" };
+    case "connecting": return { label: "接続中…", bg: "rgba(255,255,255,0.25)", color: "#fff" };
+    case "offline": return { label: "オフライン", bg: "rgba(253,230,138,0.9)", color: "#7a4a00" };
+    case "error": return { label: "同期エラー", bg: "rgba(254,202,202,0.9)", color: "#7a1a1a" };
+    default: return { label: "共有オフ", bg: "rgba(255,255,255,0.18)", color: "rgba(255,255,255,0.85)" };
+  }
+}
+
 const localStore = {
   async get(key) {
+    if (CloudSync.isActive()) {
+      const cached = CloudSync.getCached(key);
+      if (cached !== null) return { key, value: cached };
+    }
     try {
       const v = localStorage.getItem("renshoji:" + key);
       if (v === null) return null;
@@ -32,10 +196,9 @@ const localStore = {
     } catch (e) { return null; }
   },
   async set(key, value) {
-    try {
-      localStorage.setItem("renshoji:" + key, value);
-      return { key, value };
-    } catch (e) { return null; }
+    try { localStorage.setItem("renshoji:" + key, value); } catch (e) {}
+    if (CloudSync.isActive()) CloudSync.setField(key, value);
+    return { key, value };
   },
 };
 
@@ -218,6 +381,12 @@ function App() {
   const [selectedDay, setSelectedDay] = useState(null);
   const [viewMode, setViewMode] = useState("list");
   const [notification, setNotification] = useState(null);
+  const [syncStatus, setSyncStatus] = useState(CloudSync.getStatus());
+  const [syncGeneration, setSyncGeneration] = useState(0);
+  const [syncModalOpen, setSyncModalOpen] = useState(false);
+  const [syncEditing, setSyncEditing] = useState(false);
+  const [syncForm, setSyncForm] = useState({ configText: "", roomCode: "" });
+  const [syncFormError, setSyncFormError] = useState("");
   const notifShown = useRef(false);
   const touchStartX = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -227,11 +396,21 @@ function App() {
   const CUSTOM_ALL_KEY = "custom_all";
 
   useEffect(function() {
+    const off = CloudSync.onStatus(setSyncStatus);
+    const saved = CloudSync.loadConfig();
+    if (saved) CloudSync.start(saved);
+    return off;
+  }, []);
+
+  useEffect(function() {
     setStorageReady(false);
     notifShown.current = false;
-    (async function() {
+    let cancelled = false;
+
+    async function loadAll() {
       try {
         const r = await localStore.get(STORAGE_KEY);
+        if (cancelled) return;
         if (r && r.value) {
           const p = JSON.parse(r.value);
           setStatuses(p.statuses || {}); setCompletedDates(p.completedDates || {}); setMemos(p.memos || {});
@@ -244,9 +423,18 @@ function App() {
         const rc = await localStore.get(CUSTOM_ALL_KEY);
         setCustomTasks(rc && rc.value ? JSON.parse(rc.value) : {});
       } catch (e) { setStatuses({}); setCompletedDates({}); setMemos({}); setAllMemos({}); setCustomTasks({}); }
-      setStorageReady(true);
+    }
+
+    (async function() {
+      await CloudSync.waitFirstSync();
+      if (cancelled) return;
+      await loadAll();
+      if (!cancelled) setStorageReady(true);
     })();
-  }, [year]);
+
+    const offData = CloudSync.onData(function() { loadAll(); });
+    return function() { cancelled = true; offData(); };
+  }, [year, syncGeneration]);
 
   useEffect(function() {
     if (!storageReady) return;
@@ -418,6 +606,48 @@ function App() {
     });
     setStatuses(function(prev){ const n = Object.assign({}, prev); delete n[id]; return n; });
     setMemos(function(prev){ const n = Object.assign({}, prev); delete n[id]; return n; });
+  }
+
+  function openSyncModal() {
+    const configured = CloudSync.isConfigured();
+    if (!configured) {
+      setSyncForm({ configText: "", roomCode: generateRoomCode() });
+    }
+    setSyncFormError("");
+    setSyncEditing(!configured);
+    setSyncModalOpen(true);
+  }
+  function editSyncSettings() {
+    const cfg = CloudSync.loadConfig();
+    setSyncForm({
+      configText: cfg ? JSON.stringify(cfg.firebaseConfig, null, 2) : "",
+      roomCode: cfg ? cfg.roomCode : generateRoomCode(),
+    });
+    setSyncFormError("");
+    setSyncEditing(true);
+  }
+  function submitSyncForm() {
+    setSyncFormError("");
+    const code = syncForm.roomCode.trim();
+    if (!code) { setSyncFormError("共有コードを入力してください。"); return; }
+    let parsed;
+    try { parsed = parseFirebaseConfigInput(syncForm.configText); }
+    catch (e) { setSyncFormError(e.message); return; }
+    CloudSync.start({ firebaseConfig: parsed, roomCode: code });
+    setSyncGeneration(function(g){ return g + 1; });
+    setSyncEditing(false);
+    setSyncModalOpen(false);
+  }
+  function disconnectSync() {
+    if (!window.confirm("共有を解除して、この端末だけのデータ管理に戻しますか？\n（すでに共有されているデータは他の端末には残ります）")) return;
+    CloudSync.disconnectAndForget();
+    setSyncGeneration(function(g){ return g + 1; });
+    setSyncModalOpen(false);
+  }
+  function copyRoomCode() {
+    const code = CloudSync.getRoomCode() || "";
+    try { navigator.clipboard.writeText(code); } catch (e) {}
+    window.alert("共有コードをコピーしました：" + code);
   }
 
   const urgentCount = allTasks.filter(function(t) {
@@ -726,9 +956,16 @@ function App() {
     ),
     React.createElement('div', { style:{ flexShrink:0 } },
       React.createElement('div', { style: S.header },
-        React.createElement('div', { style:{ marginBottom:8 } },
-          React.createElement('span', { style:{ fontSize:"1.05rem", fontWeight:700, letterSpacing:"0.04em", color:"#fff" } }, today.getFullYear() + "年" + (today.getMonth()+1) + "月" + today.getDate() + "日"),
-          React.createElement('span', { style:{ fontSize:"0.95rem", fontWeight:700, color:"rgba(255,255,255,0.75)", marginLeft:6 } }, "（" + WEEKDAYS[today.getDay()] + "）")
+        React.createElement('div', { style:{ marginBottom:8, display:"flex", alignItems:"center", justifyContent:"space-between" } },
+          React.createElement('div', null,
+            React.createElement('span', { style:{ fontSize:"1.05rem", fontWeight:700, letterSpacing:"0.04em", color:"#fff" } }, today.getFullYear() + "年" + (today.getMonth()+1) + "月" + today.getDate() + "日"),
+            React.createElement('span', { style:{ fontSize:"0.95rem", fontWeight:700, color:"rgba(255,255,255,0.75)", marginLeft:6 } }, "（" + WEEKDAYS[today.getDay()] + "）")
+          ),
+          React.createElement('button', {
+            onClick: openSyncModal,
+            style:{ padding:"4px 10px", borderRadius:99, border:"none", cursor:"pointer", fontFamily:"inherit",
+              fontSize:"0.68rem", fontWeight:700, background: syncStatusMeta(syncStatus).bg, color: syncStatusMeta(syncStatus).color }
+          }, "☁ " + syncStatusMeta(syncStatus).label)
         ),
         React.createElement('div', { style:{ display:"flex", alignItems:"center", justifyContent:"space-between" } },
           React.createElement('div', { style: S.yearNav },
@@ -906,6 +1143,60 @@ function App() {
           React.createElement('button', { style: S.cancelBtn, onClick: function(){ setShowAddModal(false); } }, "キャンセル"),
           React.createElement('button', { style: S.saveBtn, onClick: addCustomTask, disabled: !newTask.name.trim() }, "追加する")
         )
+      )
+    ),
+    syncModalOpen && React.createElement('div', { style: S.modal, onClick: function(e){ if (e.target===e.currentTarget) setSyncModalOpen(false); } },
+      React.createElement('div', { style: S.modalBox },
+        React.createElement('p', { style: S.modalTitle }, "端末間の共有設定"),
+        (!syncEditing && CloudSync.isConfigured())
+          ? React.createElement(React.Fragment, null,
+              React.createElement('div', { style:{ fontSize:"0.82rem", color:"#5a4a3a", marginBottom:14, lineHeight:1.8 } },
+                "現在の状態： " + syncStatusMeta(syncStatus).label,
+                React.createElement('br'),
+                "他の端末（パソコン・スマホ）でも同じFirebase設定と共有コードを入力すると、タスクが共有されます。"
+              ),
+              React.createElement('label', { style: S.label }, "共有コード"),
+              React.createElement('div', { style:{ display:"flex", gap:8, marginBottom:14 } },
+                React.createElement('input', { readOnly:true, value: CloudSync.getRoomCode() || "", style: Object.assign({}, S.input, { marginBottom:0, flex:1 }) }),
+                React.createElement('button', { onClick: copyRoomCode, style:{ padding:"0 14px", borderRadius:10, border:"1.5px solid #d8cfc5", background:"#fff", color:"#7a5c3e", cursor:"pointer", fontFamily:"inherit", fontSize:"0.78rem" } }, "コピー")
+              ),
+              React.createElement('div', { style: S.modalBtns },
+                React.createElement('button', { style: S.cancelBtn, onClick: function(){ setSyncModalOpen(false); } }, "閉じる"),
+                React.createElement('button', { style: S.saveBtn, onClick: editSyncSettings }, "設定を変更")
+              ),
+              React.createElement('button', {
+                onClick: disconnectSync,
+                style:{ width:"100%", marginTop:10, padding:"9px", borderRadius:10, border:"1.5px solid #e0c4c4", background:"#fdf0f0", color:"#b03030", cursor:"pointer", fontFamily:"inherit", fontSize:"0.8rem", fontWeight:600 }
+              }, "共有を解除してこの端末だけで使う")
+            )
+          : React.createElement(React.Fragment, null,
+              React.createElement('div', { style:{ fontSize:"0.76rem", color:"#5a4a3a", marginBottom:12, lineHeight:1.8 } },
+                "Firebase（無料）を使って、パソコンとスマホでタスクをリアルタイムに共有できます。",
+                React.createElement('br'),
+                "① Firebaseでプロジェクトを作成し、Firestore と 匿名認証 を有効化",
+                React.createElement('br'),
+                "② 「アプリを追加（ウェブ）」で表示される firebaseConfig をそのまま下に貼り付け",
+                React.createElement('br'),
+                "③ 共有コードを決めて「開始する」→ 他の端末でも同じ設定・コードを入力（詳しい手順は同梱のSETUP.md参照）"
+              ),
+              React.createElement('label', { style: S.label }, "Firebase設定（firebaseConfigをそのまま貼り付け）"),
+              React.createElement('textarea', {
+                value: syncForm.configText,
+                onChange: function(e){ setSyncForm(function(p){ return Object.assign({}, p, { configText: e.target.value }); }); },
+                placeholder: "const firebaseConfig = {\n  apiKey: \"...\",\n  authDomain: \"...\",\n  projectId: \"...\",\n  ...\n};",
+                style:{ width:"100%", minHeight:110, padding:"9px 11px", borderRadius:10, border:"1.5px solid #d8cfc5", fontFamily:"monospace", fontSize:"0.72rem", boxSizing:"border-box", marginBottom:11, background:"#fff", color:"#2c1f14", resize:"vertical" }
+              }),
+              React.createElement('label', { style: S.label }, "共有コード（他の端末と同じものを入力）"),
+              React.createElement('div', { style:{ display:"flex", gap:8, marginBottom:6 } },
+                React.createElement('input', { style: Object.assign({}, S.input, { marginBottom:0, flex:1 }), value: syncForm.roomCode, onChange: function(e){ setSyncForm(function(p){ return Object.assign({}, p, { roomCode: e.target.value }); }); } }),
+                React.createElement('button', { onClick: function(){ setSyncForm(function(p){ return Object.assign({}, p, { roomCode: generateRoomCode() }); }); }, style:{ padding:"0 12px", borderRadius:10, border:"1.5px solid #d8cfc5", background:"#fff", color:"#7a5c3e", cursor:"pointer", fontFamily:"inherit", fontSize:"0.74rem" } }, "生成")
+              ),
+              syncFormError && React.createElement('div', { style:{ color:"#b03030", fontSize:"0.74rem", marginBottom:8, lineHeight:1.6 } }, syncFormError),
+              React.createElement('div', { style: Object.assign({}, S.modalBtns, { marginTop:10 }) },
+                React.createElement('button', { style: S.cancelBtn, onClick: function(){ if (CloudSync.isConfigured()) setSyncEditing(false); else setSyncModalOpen(false); } }, "キャンセル"),
+                React.createElement('button', { style: S.saveBtn, onClick: submitSyncForm }, "この設定で開始する")
+              )
+            )
       )
     )
   );
